@@ -9,7 +9,7 @@ pub mod error;
 pub mod provider;
 
 // Re-export commonly used types
-pub use config::{get_app_config_dir, AppType};
+pub use config::{get_app_config_dir, get_database_path, AppType};
 pub use database::Database;
-pub use error::CoreError;
-pub use provider::{Provider, ProviderMeta};
+pub use error::{CoreError, Result};
+pub use provider::{Provider, ProviderManager, ProviderMeta};
