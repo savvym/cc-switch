@@ -186,10 +186,67 @@ fn switch(id: String, app: String) -> Result<()> {
         .get_provider_by_id(&id, app_type.as_str())?
         .ok_or_else(|| anyhow::anyhow!("Provider not found: {}", id))?;
 
-    // Set as current
+    // Set as current in database
     db.set_current_provider(app_type.as_str(), &id)?;
 
+    // Write live config
+    write_live_config(&app_type, &provider)?;
+
     println!("✓ Switched to provider: {} ({})", provider.name, id);
+    Ok(())
+}
+
+/// Write provider config to live configuration files
+fn write_live_config(app_type: &AppType, provider: &cc_switch_core::Provider) -> Result<()> {
+    match app_type {
+        AppType::Claude => {
+            let path = cc_switch_core::get_claude_settings_path();
+            cc_switch_core::write_json_file(&path, &provider.settings_config)?;
+            println!("  Updated: {}", path.display());
+        }
+        AppType::Codex => {
+            // Codex uses auth.json and config.toml
+            let obj = provider
+                .settings_config
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("Codex config must be a JSON object"))?;
+
+            if let Some(auth) = obj.get("auth") {
+                let auth_path = cc_switch_core::get_codex_config_dir().join("auth.json");
+                cc_switch_core::write_json_file(&auth_path, auth)?;
+                println!("  Updated: {}", auth_path.display());
+            }
+
+            if let Some(config) = obj.get("config").and_then(|v| v.as_str()) {
+                let config_path = cc_switch_core::get_codex_config_dir().join("config.toml");
+                cc_switch_core::write_text_file(&config_path, config)?;
+                println!("  Updated: {}", config_path.display());
+            }
+        }
+        AppType::Gemini => {
+            // Gemini uses .env file and settings.json
+            let config_dir = cc_switch_core::get_gemini_config_dir();
+
+            if let Some(env_obj) = provider.settings_config.get("env").and_then(|v| v.as_object()) {
+                let env_path = config_dir.join(".env");
+                let env_content: String = env_obj
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                cc_switch_core::write_text_file(&env_path, &env_content)?;
+                println!("  Updated: {}", env_path.display());
+            }
+
+            if let Some(config) = provider.settings_config.get("config") {
+                if config.is_object() {
+                    let settings_path = config_dir.join("settings.json");
+                    cc_switch_core::write_json_file(&settings_path, config)?;
+                    println!("  Updated: {}", settings_path.display());
+                }
+            }
+        }
+    }
     Ok(())
 }
 
