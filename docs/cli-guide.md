@@ -32,17 +32,50 @@ brew install farion1231/tap/cc-switch
 ## Quick Start
 
 ```bash
-# List all providers
-cc-switch provider list
+# Interactive mode - just run cc-switch!
+cc-switch
+# Use ↑↓ to select provider, Enter to switch
 
-# Switch to a provider
-cc-switch provider switch <provider-id>
+# Or use the shortcut
+cc-switch s
 
-# Add a new provider
-cc-switch provider add --name "My Provider" --api-key "sk-xxx" --base-url "https://api.example.com"
+# For other app types
+cc-switch -a codex
+cc-switch -a gemini
 ```
 
 ## Command Reference
+
+### Interactive Mode (Recommended)
+
+Simply run `cc-switch` without arguments for interactive provider selection:
+
+```bash
+cc-switch [OPTIONS]
+
+Options:
+  -a, --app <APP>  App type: claude, codex, or gemini [default: claude]
+```
+
+**Example output:**
+
+```
+Select claude provider (↑↓ to move, Enter to select)
+> gac (default) ✓
+  My API (abc123-...)
+  Another Provider (def456-...)
+```
+
+### `cc-switch s`
+
+Shortcut for interactive switch:
+
+```bash
+cc-switch s [OPTIONS]
+
+Options:
+  -a, --app <APP>  App type: claude, codex, or gemini [default: claude]
+```
 
 ### `provider list`
 
