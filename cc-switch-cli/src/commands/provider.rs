@@ -73,6 +73,29 @@ pub enum ProviderCommands {
         #[arg(short, long)]
         input: Option<String>,
     },
+
+    /// Add a new provider
+    Add {
+        /// App type: claude, codex, or gemini
+        #[arg(short, long, default_value = "claude")]
+        app: String,
+
+        /// Provider name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// API key
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Base URL
+        #[arg(long)]
+        base_url: Option<String>,
+
+        /// Interactive mode (prompt for all values)
+        #[arg(short, long)]
+        interactive: bool,
+    },
 }
 
 pub fn handle(cmd: ProviderCommands) -> Result<()> {
@@ -83,6 +106,13 @@ pub fn handle(cmd: ProviderCommands) -> Result<()> {
         ProviderCommands::Delete { id, app, yes } => delete(id, app, yes),
         ProviderCommands::Export { app, output } => export(app, output),
         ProviderCommands::Import { app, input } => import(app, input),
+        ProviderCommands::Add {
+            app,
+            name,
+            api_key,
+            base_url,
+            interactive,
+        } => add(app, name, api_key, base_url, interactive),
     }
 }
 
@@ -241,5 +271,110 @@ fn import(app: String, input: Option<String>) -> Result<()> {
     }
 
     println!("✓ Imported {} providers", count);
+    Ok(())
+}
+
+fn prompt(message: &str) -> io::Result<String> {
+    print!("{}: ", message);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_optional(message: &str, default: &str) -> io::Result<String> {
+    print!("{} [{}]: ", message, default);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+
+    if trimmed.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn add(
+    app: String,
+    name: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    interactive: bool,
+) -> Result<()> {
+    let db = Database::init()?;
+    let app_type =
+        AppType::from_str(&app).ok_or_else(|| anyhow::anyhow!("Invalid app type: {}", app))?;
+
+    let provider_name = if interactive || name.is_none() {
+        prompt("Provider name")?
+    } else {
+        name.unwrap()
+    };
+
+    if provider_name.is_empty() {
+        anyhow::bail!("Provider name cannot be empty");
+    }
+
+    let api_key_val = if interactive || api_key.is_none() {
+        prompt("API key")?
+    } else {
+        api_key.unwrap()
+    };
+
+    let default_url = match app_type {
+        AppType::Claude => "https://api.anthropic.com",
+        AppType::Codex => "https://api.openai.com/v1",
+        AppType::Gemini => "https://generativelanguage.googleapis.com",
+    };
+
+    let base_url_val = if interactive || base_url.is_none() {
+        prompt_optional("Base URL", default_url)?
+    } else {
+        base_url.unwrap()
+    };
+
+    // Build provider config based on app type
+    let settings_config = match app_type {
+        AppType::Claude => serde_json::json!({
+            "env": {
+                "ANTHROPIC_API_KEY": api_key_val,
+                "ANTHROPIC_BASE_URL": base_url_val
+            }
+        }),
+        AppType::Codex => serde_json::json!({
+            "env": {
+                "OPENAI_API_KEY": api_key_val,
+                "OPENAI_BASE_URL": base_url_val
+            }
+        }),
+        AppType::Gemini => serde_json::json!({
+            "apiKey": api_key_val,
+            "baseUrl": base_url_val
+        }),
+    };
+
+    let provider = cc_switch_core::Provider {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: provider_name.clone(),
+        settings_config,
+        website_url: None,
+        category: Some("custom".to_string()),
+        created_at: Some(chrono::Utc::now().timestamp_millis()),
+        sort_index: None,
+        notes: None,
+        meta: None,
+        icon: None,
+        icon_color: None,
+        is_proxy_target: None,
+    };
+
+    let provider_id = provider.id.clone();
+    db.save_provider(app_type.as_str(), &provider)?;
+
+    println!("✓ Added provider: {} ({})", provider_name, provider_id);
     Ok(())
 }
