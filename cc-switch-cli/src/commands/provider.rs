@@ -1,6 +1,7 @@
 use anyhow::Result;
 use cc_switch_core::{AppType, Database};
 use clap::Subcommand;
+use dialoguer::{theme::ColorfulTheme, Select};
 use std::io::{self, Write};
 
 use crate::output::create_table;
@@ -433,5 +434,61 @@ fn add(
     db.save_provider(app_type.as_str(), &provider)?;
 
     println!("✓ Added provider: {} ({})", provider_name, provider_id);
+    Ok(())
+}
+
+/// Interactive provider switch with arrow key selection
+pub fn interactive_switch(app: String) -> Result<()> {
+    let db = Database::init()?;
+    let app_type =
+        AppType::from_str(&app).ok_or_else(|| anyhow::anyhow!("Invalid app type: {}", app))?;
+
+    let providers = db.get_all_providers(app_type.as_str())?;
+    let current = db.get_current_provider(app_type.as_str())?;
+
+    if providers.is_empty() {
+        println!("No providers found for {}. Use 'cc-switch provider add' to add one.", app);
+        return Ok(());
+    }
+
+    // Build display items
+    let items: Vec<String> = providers
+        .iter()
+        .map(|(id, p)| {
+            let marker = if current.as_ref() == Some(id) { " ✓" } else { "" };
+            format!("{} ({}){}", p.name, id, marker)
+        })
+        .collect();
+
+    let ids: Vec<&String> = providers.keys().collect();
+
+    // Find current selection index
+    let default = current
+        .as_ref()
+        .and_then(|c| ids.iter().position(|id| *id == c))
+        .unwrap_or(0);
+
+    // Show interactive selection
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("Select {} provider (↑↓ to move, Enter to select)", app))
+        .items(&items)
+        .default(default)
+        .interact()?;
+
+    let selected_id = ids[selection];
+
+    // If already current, skip
+    if current.as_ref() == Some(selected_id) {
+        println!("Already using: {}", providers[selected_id].name);
+        return Ok(());
+    }
+
+    // Get provider and switch
+    let provider = providers.get(selected_id).unwrap();
+
+    db.set_current_provider(app_type.as_str(), selected_id)?;
+    write_live_config(&app_type, provider)?;
+
+    println!("✓ Switched to: {}", provider.name);
     Ok(())
 }
