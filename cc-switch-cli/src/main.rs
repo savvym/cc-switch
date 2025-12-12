@@ -18,7 +18,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Provider management
-    #[command(subcommand)]
+    #[command(subcommand, alias = "p")]
     Provider(commands::provider::ProviderCommands),
 
     /// Interactive provider switch (alias for quick access)

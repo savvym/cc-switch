@@ -4,22 +4,22 @@ use clap::Subcommand;
 use dialoguer::{theme::ColorfulTheme, Select};
 use std::io::{self, Write};
 
-use crate::output::create_table;
-
 #[derive(Subcommand)]
 pub enum ProviderCommands {
-    /// List all providers
+    /// List all providers (interactive selection by default)
+    #[command(alias = "ls")]
     List {
         /// App type: claude, codex, or gemini
         #[arg(short, long, default_value = "claude")]
         app: String,
 
-        /// Output format: table or json
-        #[arg(short, long, default_value = "table")]
-        format: String,
+        /// Output format: json (default is interactive selection)
+        #[arg(short, long)]
+        format: Option<String>,
     },
 
     /// Show detailed provider information
+    #[command(alias = "info")]
     Show {
         /// Provider ID
         id: String,
@@ -40,6 +40,7 @@ pub enum ProviderCommands {
     },
 
     /// Delete a provider
+    #[command(alias = "rm")]
     Delete {
         /// Provider ID to delete
         id: String,
@@ -76,6 +77,7 @@ pub enum ProviderCommands {
     },
 
     /// Add a new provider
+    #[command(alias = "new")]
     Add {
         /// App type: claude, codex, or gemini
         #[arg(short, long, default_value = "claude")]
@@ -117,7 +119,7 @@ pub fn handle(cmd: ProviderCommands) -> Result<()> {
     }
 }
 
-fn list(app: String, format: String) -> Result<()> {
+fn list(app: String, format: Option<String>) -> Result<()> {
     let db = Database::init()?;
     let app_type =
         AppType::from_str(&app).ok_or_else(|| anyhow::anyhow!("Invalid app type: {}", app))?;
@@ -125,26 +127,108 @@ fn list(app: String, format: String) -> Result<()> {
     let providers = db.get_all_providers(app_type.as_str())?;
     let current = db.get_current_provider(app_type.as_str())?;
 
-    if format == "json" {
+    if providers.is_empty() {
+        println!("No providers found for {}. Use 'cc-switch provider add' to add one.", app);
+        return Ok(());
+    }
+
+    // If JSON format is requested, output JSON
+    if format.as_deref() == Some("json") {
         println!("{}", serde_json::to_string_pretty(&providers)?);
         return Ok(());
     }
 
-    // Table format
-    let mut table = create_table(vec!["ID", "Name", "Category", "Current"]);
+    // Default: Interactive mode - allow selection to view details
+    interactive_list(providers, current, app)
+}
 
-    for (id, provider) in providers.iter() {
-        let is_current = current.as_ref().map(|c| c == id).unwrap_or(false);
-        table.add_row(vec![
-            id.as_str(),
-            &provider.name,
-            provider.category.as_deref().unwrap_or("-"),
-            if is_current { "✓" } else { "" },
-        ]);
+/// Interactive list with arrow key selection to view details
+fn interactive_list(
+    providers: indexmap::IndexMap<String, cc_switch_core::Provider>,
+    current: Option<String>,
+    app: String,
+) -> Result<()> {
+    // Build display items
+    let items: Vec<String> = providers
+        .iter()
+        .map(|(id, p)| {
+            let marker = if current.as_ref() == Some(id) { " ✓" } else { "" };
+            let category = p.category.as_deref().unwrap_or("-");
+            format!("{} [{}]{}", p.name, category, marker)
+        })
+        .collect();
+
+    let ids: Vec<&String> = providers.keys().collect();
+
+    // Find current selection index
+    let mut default = current
+        .as_ref()
+        .and_then(|c| ids.iter().position(|id| *id == c))
+        .unwrap_or(0);
+
+    // Loop to allow continuous browsing
+    loop {
+        // Show interactive selection
+        let selection = match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("Select {} provider (↑↓ to navigate, Enter to view details, Esc to exit)", app))
+            .items(&items)
+            .default(default)
+            .interact_opt()
+        {
+            Ok(Some(idx)) => idx,
+            Ok(None) => {
+                // User pressed Esc on the list - exit
+                return Ok(());
+            }
+            Err(e) => {
+                // If interaction fails (e.g., not a TTY), fall back to simple list
+                eprintln!("Interactive mode not available: {}", e);
+                eprintln!("Showing provider list instead:");
+                for (i, (id, provider)) in providers.iter().enumerate() {
+                    let marker = if current.as_ref() == Some(id) { " ✓" } else { "" };
+                    println!("{}. {} ({}){}", i + 1, provider.name, id, marker);
+                }
+                return Ok(());
+            }
+        };
+
+        let selected_id = ids[selection];
+        let provider = providers.get(selected_id).unwrap();
+
+        // Display detailed information
+        println!("\n{}", "=".repeat(60));
+        println!("Provider Details");
+        println!("{}", "=".repeat(60));
+        println!("ID: {}", provider.id);
+        println!("Name: {}", provider.name);
+        if let Some(category) = &provider.category {
+            println!("Category: {}", category);
+        }
+        if let Some(website) = &provider.website_url {
+            println!("Website: {}", website);
+        }
+        if let Some(notes) = &provider.notes {
+            println!("Notes: {}", notes);
+        }
+
+        println!("\nConfiguration:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provider.settings_config)?
+        );
+        println!("{}", "=".repeat(60));
+
+        // Wait for user to press Enter to return to list
+        println!("\nPress Enter to return to list...");
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            return Ok(());
+        }
+
+        // Remember the last selection for next iteration
+        default = selection;
+        println!();
     }
-
-    println!("{}", table);
-    Ok(())
 }
 
 fn show(id: String, app: String) -> Result<()> {
