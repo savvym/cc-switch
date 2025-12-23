@@ -14,6 +14,7 @@
 //!     └── providers.rs
 //! ```
 
+mod backup;
 mod dao;
 mod schema;
 

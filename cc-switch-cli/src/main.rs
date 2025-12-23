@@ -21,6 +21,10 @@ enum Commands {
     #[command(subcommand, alias = "p")]
     Provider(commands::provider::ProviderCommands),
 
+    /// Database backup and restore
+    #[command(subcommand, alias = "b")]
+    Backup(commands::backup::BackupCommands),
+
     /// Interactive provider switch (alias for quick access)
     #[command(name = "s")]
     Switch {
@@ -35,6 +39,7 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Commands::Provider(cmd)) => commands::provider::handle(cmd),
+        Some(Commands::Backup(cmd)) => commands::backup::handle(cmd),
         Some(Commands::Switch { app }) => commands::provider::interactive_switch(app),
         None => commands::provider::interactive_switch(cli.app),
     }
