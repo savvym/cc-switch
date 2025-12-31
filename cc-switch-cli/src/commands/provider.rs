@@ -87,9 +87,13 @@ pub enum ProviderCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// API key
+        /// API key (for Claude: ANTHROPIC_API_KEY)
         #[arg(long)]
         api_key: Option<String>,
+
+        /// Auth token (for Claude: ANTHROPIC_AUTH_TOKEN, optional if api_key is provided)
+        #[arg(long)]
+        auth_token: Option<String>,
 
         /// Base URL
         #[arg(long)]
@@ -113,9 +117,10 @@ pub fn handle(cmd: ProviderCommands) -> Result<()> {
             app,
             name,
             api_key,
+            auth_token,
             base_url,
             interactive,
-        } => add(app, name, api_key, base_url, interactive),
+        } => add(app, name, api_key, auth_token, base_url, interactive),
     }
 }
 
@@ -444,6 +449,7 @@ fn add(
     app: String,
     name: Option<String>,
     api_key: Option<String>,
+    auth_token: Option<String>,
     base_url: Option<String>,
     interactive: bool,
 ) -> Result<()> {
@@ -461,42 +467,109 @@ fn add(
         anyhow::bail!("Provider name cannot be empty");
     }
 
-    let api_key_val = if interactive || api_key.is_none() {
-        prompt("API key")?
-    } else {
-        api_key.unwrap()
-    };
-
     let default_url = match app_type {
         AppType::Claude => "https://api.anthropic.com",
         AppType::Codex => "https://api.openai.com/v1",
         AppType::Gemini => "https://generativelanguage.googleapis.com",
     };
 
-    let base_url_val = if interactive || base_url.is_none() {
-        prompt_optional("Base URL", default_url)?
-    } else {
-        base_url.unwrap()
-    };
-
     // Build provider config based on app type
     let settings_config = match app_type {
-        AppType::Claude => serde_json::json!({
-            "env": {
-                "ANTHROPIC_API_KEY": api_key_val,
-                "ANTHROPIC_BASE_URL": base_url_val
+        AppType::Claude => {
+            // For Claude, support both ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN
+            let api_key_val = if interactive || api_key.is_none() {
+                prompt_optional("ANTHROPIC_API_KEY (press Enter to skip)", "")?
+            } else {
+                api_key.unwrap_or_default()
+            };
+
+            // If API_KEY is provided, AUTH_TOKEN can be empty; otherwise AUTH_TOKEN is required
+            let auth_token_val = if !api_key_val.is_empty() {
+                // API_KEY provided, AUTH_TOKEN is optional
+                if interactive || auth_token.is_none() {
+                    prompt_optional("ANTHROPIC_AUTH_TOKEN (press Enter to skip)", "")?
+                } else {
+                    auth_token.unwrap_or_default()
+                }
+            } else {
+                // No API_KEY, AUTH_TOKEN is required
+                if interactive || auth_token.is_none() {
+                    let token = prompt("ANTHROPIC_AUTH_TOKEN (required)")?;
+                    if token.is_empty() {
+                        anyhow::bail!("ANTHROPIC_AUTH_TOKEN is required when ANTHROPIC_API_KEY is not provided");
+                    }
+                    token
+                } else {
+                    let token = auth_token.unwrap_or_default();
+                    if token.is_empty() {
+                        anyhow::bail!("ANTHROPIC_AUTH_TOKEN is required when ANTHROPIC_API_KEY is not provided");
+                    }
+                    token
+                }
+            };
+
+            let base_url_val = if interactive || base_url.is_none() {
+                prompt_optional("Base URL", default_url)?
+            } else {
+                base_url.unwrap()
+            };
+
+            // If ANTHROPIC_API_KEY is provided, add its last 20 chars to ~/.claude.json approved list
+            if !api_key_val.is_empty() {
+                if let Err(e) = approve_api_key_in_claude_json(&api_key_val) {
+                    eprintln!("Warning: Failed to update ~/.claude.json approved list: {}", e);
+                }
             }
-        }),
-        AppType::Codex => serde_json::json!({
-            "env": {
-                "OPENAI_API_KEY": api_key_val,
-                "OPENAI_BASE_URL": base_url_val
+
+            let mut env = serde_json::Map::new();
+            if !api_key_val.is_empty() {
+                env.insert("ANTHROPIC_API_KEY".to_string(), serde_json::Value::String(api_key_val));
             }
-        }),
-        AppType::Gemini => serde_json::json!({
-            "apiKey": api_key_val,
-            "baseUrl": base_url_val
-        }),
+            if !auth_token_val.is_empty() {
+                env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), serde_json::Value::String(auth_token_val));
+            }
+            env.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::Value::String(base_url_val));
+
+            serde_json::json!({ "env": env })
+        }
+        AppType::Codex => {
+            let api_key_val = if interactive || api_key.is_none() {
+                prompt("API key")?
+            } else {
+                api_key.unwrap()
+            };
+
+            let base_url_val = if interactive || base_url.is_none() {
+                prompt_optional("Base URL", default_url)?
+            } else {
+                base_url.unwrap()
+            };
+
+            serde_json::json!({
+                "env": {
+                    "OPENAI_API_KEY": api_key_val,
+                    "OPENAI_BASE_URL": base_url_val
+                }
+            })
+        }
+        AppType::Gemini => {
+            let api_key_val = if interactive || api_key.is_none() {
+                prompt("API key")?
+            } else {
+                api_key.unwrap()
+            };
+
+            let base_url_val = if interactive || base_url.is_none() {
+                prompt_optional("Base URL", default_url)?
+            } else {
+                base_url.unwrap()
+            };
+
+            serde_json::json!({
+                "apiKey": api_key_val,
+                "baseUrl": base_url_val
+            })
+        }
     };
 
     let provider = cc_switch_core::Provider {
@@ -518,6 +591,75 @@ fn add(
     db.save_provider(app_type.as_str(), &provider)?;
 
     println!("✓ Added provider: {} ({})", provider_name, provider_id);
+    Ok(())
+}
+
+/// Add API key's last 20 characters to ~/.claude.json customApiKeyResponses.approved list
+/// and set hasCompletedOnboarding to true to skip login
+fn approve_api_key_in_claude_json(api_key: &str) -> Result<()> {
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+    let claude_json_path = std::path::PathBuf::from(&home).join(".claude.json");
+
+    // Get last 20 characters of API key
+    let key_suffix: String = api_key.chars().rev().take(20).collect::<String>().chars().rev().collect();
+    if key_suffix.len() < 20 {
+        // API key too short, skip
+        return Ok(());
+    }
+
+    // Read existing file or create empty object
+    let mut config: serde_json::Value = if claude_json_path.exists() {
+        let content = std::fs::read_to_string(&claude_json_path)?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure config is an object
+    if !config.is_object() {
+        config = serde_json::json!({});
+    }
+
+    let obj = config.as_object_mut().unwrap();
+
+    // Set hasCompletedOnboarding to true to skip login
+    let mut modified = false;
+    if obj.get("hasCompletedOnboarding") != Some(&serde_json::Value::Bool(true)) {
+        obj.insert("hasCompletedOnboarding".to_string(), serde_json::Value::Bool(true));
+        println!("  Set hasCompletedOnboarding=true in ~/.claude.json");
+        modified = true;
+    }
+
+    // Ensure customApiKeyResponses.approved exists and is an array
+    if !obj.contains_key("customApiKeyResponses") {
+        obj.insert("customApiKeyResponses".to_string(), serde_json::json!({}));
+    }
+
+    let responses = obj.get_mut("customApiKeyResponses").unwrap().as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("customApiKeyResponses is not an object"))?;
+
+    if !responses.contains_key("approved") {
+        responses.insert("approved".to_string(), serde_json::json!([]));
+    }
+
+    let approved = responses.get_mut("approved").unwrap().as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("approved is not an array"))?;
+
+    // Check if key_suffix already exists
+    let key_value = serde_json::Value::String(key_suffix.clone());
+    if !approved.contains(&key_value) {
+        approved.push(key_value);
+        println!("  Added API key suffix to ~/.claude.json approved list");
+        modified = true;
+    }
+
+    // Write back atomically if modified
+    if modified {
+        let tmp_path = claude_json_path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, serde_json::to_string_pretty(&config)?)?;
+        std::fs::rename(&tmp_path, &claude_json_path)?;
+    }
+
     Ok(())
 }
 
